@@ -52,7 +52,7 @@ async function handleGDataRequest(req) {
         return handleSearchRequest(query);
     }
 
-    // Подписка на канал
+    // Подпика на канал
     if (path.includes('/subscriptions')) {
         return subscribeToChannel(body);
     }
@@ -70,6 +70,16 @@ async function handleGDataRequest(req) {
     // Получение субтитров
     if (path.includes('/captions')) {
         return getCaptions(query);
+    }
+
+    // Получение комментариев
+    if (path.includes('/comments')) {
+        return getComments(query);
+    }
+
+    // Лайк/дизлайк комментария
+    if (path.includes('/comments/rate')) {
+        return rateComment(body);
     }
 
     // Дефолтная обработка
@@ -269,59 +279,57 @@ async function getCaptions(params) {
     };
 }
 
-// Конвертация параметров gdata 2.1 → v3
-function convertGDataToV3(params) {
-    const mapping = {
-        // Базовые параметры
-        'q': 'q',
-        'max-results': 'maxResults',
-        'start-index': 'pageToken',
-        
-        // Фильтры
-        'orderby': {
-            'relevance': 'relevance',
-            'published': 'date',
-            'viewCount': 'viewCount',
-            'rating': 'rating'
-        },
-        
-        'time': {
-            'today': getDate(-1),
-            'this_week': getDate(-7),
-            'this_month': getDate(-30)
-        },
-        
-        'duration': {
-            'short': 'short',
-            'medium': 'medium',
-            'long': 'long'
-        },
-        
-        'uploader': {
-            'partner': { videoSyndicated: true },
-            'youtube': { videoType: 'any' }
+// Получение комментариев
+async function getComments(params) {
+    const response = await axios.get('https://www.googleapis.com/youtube/v3/commentThreads', {
+        params: {
+            part: 'snippet',
+            videoId: params.videoId,
+            maxResults: params['max-results'] || 20,
+            key: API_KEY
+        }
+    });
+
+    return {
+        feed: {
+            entry: response.data.items.map(comment => ({
+                id: comment.id,
+                author: comment.snippet.topLevelComment.snippet.authorDisplayName,
+                text: comment.snippet.topLevelComment.snippet.textDisplay,
+                likes: comment.snippet.topLevelComment.snippet.likeCount,
+                publishedAt: comment.snippet.topLevelComment.snippet.publishedAt
+            }))
         }
     };
+}
 
-    const v3Params = {};
-    
-    // Конвертация каждого параметра
-    for (const [key, value] of Object.entries(params)) {
-        if (key === 'time') {
-            v3Params.publishedAfter = mapping.time[value];
-        } 
-        else if (key === 'duration') {
-            v3Params.videoDuration = mapping.duration[value];
+// Лайк/дизлайк комментария
+async function rateComment(data) {
+    const response = await axios.post(`https://www.googleapis.com/youtube/v3/comments/rate?id=${data.commentId}&rating=${data.rating}&key=${API_KEY}`, {}, {
+        headers: {
+            Authorization: `Bearer ${oauth2Client.credentials.access_token}`
         }
-        else if (key === 'orderby') {
-            v3Params.order = mapping.orderby[value];
-        }
-        else if (mapping[key]) {
-            v3Params[mapping[key]] = value;
-        }
-    }
+    });
 
-    return v3Params;
+    return {
+        status: 'success',
+        commentId: data.commentId,
+        rating: data.rating
+    };
+}
+
+// Дефолтная обработка запросов
+async function forwardToYoutubeAPI(path, method, query) {
+    const response = await axios({
+        method,
+        url: `https://www.googleapis.com/youtube/v3${path}`,
+        params: {
+            ...query,
+            key: API_KEY
+        }
+    });
+
+    return response.data;
 }
 
 // Преобразование результатов поиска
@@ -347,13 +355,14 @@ function transformSearchResults(data) {
     };
 }
 
-// Вспомогательная функция для дат
+// Вспомогательная функция для работы с датами
 function getDate(daysAgo) {
     const date = new Date();
     date.setDate(date.getDate() + daysAgo);
     return date.toISOString();
 }
 
+// Запуск сервера
 app.listen(port, () => {
     console.log(`Прокси-сервер запущен на порту ${port}`);
 });
