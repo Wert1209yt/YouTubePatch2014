@@ -62,6 +62,16 @@ async function handleGDataRequest(req) {
         return getCategoryVideos(query);
     }
 
+    // Получение плейлистов
+    if (path.includes('/playlists')) {
+        return getPlaylists(query);
+    }
+
+    // Получение субтитров
+    if (path.includes('/captions')) {
+        return getCaptions(query);
+    }
+
     // Дефолтная обработка
     return forwardToYoutubeAPI(path, method, query);
 }
@@ -213,6 +223,50 @@ async function getCategoryVideos(params) {
     });
 
     return transformSearchResults(response.data);
+}
+
+// Получение плейлистов
+async function getPlaylists(params) {
+    const response = await axios.get('https://www.googleapis.com/youtube/v3/playlists', {
+        params: {
+            part: 'snippet',
+            channelId: params.channelId,
+            maxResults: params['max-results'] || 10,
+            key: API_KEY
+        }
+    });
+
+    return {
+        feed: {
+            entry: response.data.items.map(playlist => ({
+                id: playlist.id,
+                title: playlist.snippet.title,
+                description: playlist.snippet.description,
+                thumbnail: playlist.snippet.thumbnails.default.url
+            }))
+        }
+    };
+}
+
+// Получение субтитров
+async function getCaptions(params) {
+    const response = await axios.get('https://www.googleapis.com/youtube/v3/captions', {
+        params: {
+            part: 'snippet',
+            videoId: params.videoId,
+            key: API_KEY
+        }
+    });
+
+    return {
+        feed: {
+            entry: response.data.items.map(caption => ({
+                id: caption.id,
+                language: caption.snippet.language,
+                name: caption.snippet.name
+            }))
+        }
+    };
 }
 
 // Конвертация параметров gdata 2.1 → v3
