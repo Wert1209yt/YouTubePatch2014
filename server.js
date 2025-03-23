@@ -47,6 +47,11 @@ async function handleGDataRequest(req) {
         return getRecommendations(query);
     }
 
+    // Обработка поиска с фильтрами
+    if (path.includes('/videos')) {
+        return handleSearchRequest(query);
+    }
+
     // Дефолтная обработка
     return forwardToYoutubeAPI(path, method, query);
 }
@@ -122,6 +127,106 @@ async function getRecommendations(params) {
             }))
         }
     };
+}
+
+// Обработка поиска с фильтрами
+async function handleSearchRequest(params) {
+    const v3Params = convertGDataToV3(params);
+    
+    const response = await axios.get('https://www.googleapis.com/youtube/v3/search', {
+        params: {
+            part: 'snippet',
+            type: 'video',
+            key: API_KEY,
+            ...v3Params
+        }
+    });
+
+    return transformSearchResults(response.data);
+}
+
+// Конвертация параметров gdata 2.1 → v3
+function convertGDataToV3(params) {
+    const mapping = {
+        // Базовые параметры
+        'q': 'q',
+        'max-results': 'maxResults',
+        'start-index': 'pageToken',
+        
+        // Фильтры
+        'orderby': {
+            'relevance': 'relevance',
+            'published': 'date',
+            'viewCount': 'viewCount',
+            'rating': 'rating'
+        },
+        
+        'time': {
+            'today': getDate(-1),
+            'this_week': getDate(-7),
+            'this_month': getDate(-30)
+        },
+        
+        'duration': {
+            'short': 'short',
+            'medium': 'medium',
+            'long': 'long'
+        },
+        
+        'uploader': {
+            'partner': { videoSyndicated: true },
+            'youtube': { videoType: 'any' }
+        }
+    };
+
+    const v3Params = {};
+    
+    // Конвертация каждого параметра
+    for (const [key, value] of Object.entries(params)) {
+        if (key === 'time') {
+            v3Params.publishedAfter = mapping.time[value];
+        } 
+        else if (key === 'duration') {
+            v3Params.videoDuration = mapping.duration[value];
+        }
+        else if (key === 'orderby') {
+            v3Params.order = mapping.orderby[value];
+        }
+        else if (mapping[key]) {
+            v3Params[mapping[key]] = value;
+        }
+    }
+
+    return v3Params;
+}
+
+// Преобразование результатов поиска
+function transformSearchResults(data) {
+    return {
+        feed: {
+            xmlns: 'http://www.w3.org/2005/Atom',
+            'openSearch:totalResults': data.pageInfo.totalResults,
+            'openSearch:startIndex': data.pageInfo.resultsPerPage,
+            entry: data.items.map(item => ({
+                id: item.id.videoId,
+                title: item.snippet.title,
+                published: item.snippet.publishedAt,
+                media: {
+                    group: {
+                        thumbnail: item.snippet.thumbnails.default.url,
+                        description: item.snippet.description
+                    }
+                }
+            }))
+        }
+    };
+}
+
+// Вспомогательная функция для дат
+function getDate(daysAgo) {
+    const date = new Date();
+    date.setDate(date.getDate() + daysAgo);
+    return date.toISOString();
 }
 
 app.listen(port, () => {
