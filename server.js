@@ -57,6 +57,11 @@ async function handleGDataRequest(req) {
         return subscribeToChannel(body);
     }
 
+    // Обработка категорий
+    if (path.includes('/categories')) {
+        return getCategoryVideos(query);
+    }
+
     // Дефолтная обработка
     return forwardToYoutubeAPI(path, method, query);
 }
@@ -180,6 +185,34 @@ async function subscribeToChannel(data) {
         status: 'success',
         subscriptionId: response.data.id
     };
+}
+
+// Обработка категорий
+async function getCategoryVideos(params) {
+    const categoryMapping = {
+        'movies': 'фильмы',
+        'music': 'музыка',
+        'gaming': 'игры',
+        'news': 'новости',
+        'sports': 'спорт'
+    };
+
+    const categoryQuery = categoryMapping[params.category] || '';
+    const v3Params = convertGDataToV3({
+        ...params,
+        q: categoryQuery
+    });
+
+    const response = await axios.get('https://www.googleapis.com/youtube/v3/search', {
+        params: {
+            part: 'snippet',
+            type: 'video',
+            key: API_KEY,
+            ...v3Params
+        }
+    });
+
+    return transformSearchResults(response.data);
 }
 
 // Конвертация параметров gdata 2.1 → v3
