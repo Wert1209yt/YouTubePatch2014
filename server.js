@@ -2,6 +2,7 @@ const express = require('express');
 const axios = require('axios');
 const { google } = require('googleapis');
 const OAuth2 = google.auth.OAuth2;
+const xmlbuilder = require('xmlbuilder');
 const app = express();
 const port = 3000;
 
@@ -13,17 +14,13 @@ const API_KEY = 'YOUR_YOUTUBE_API_KEY';
 
 const oauth2Client = new OAuth2(CLIENT_ID, CLIENT_SECRET, REDIRECT_URI);
 
-// Эмуляция данных для дизлайков (используем сторонний источник)
-const dislikeService = axios.create({
-    baseURL: 'https://returnyoutubedislikeapi.com'
-});
-
 // Основной прокси-эндпоинт
 app.use(express.json());
 app.use('/feeds/api', async (req, res) => {
     try {
         const response = await handleGDataRequest(req);
-        res.json(response);
+        res.set('Content-Type', 'application/atom+xml');
+        res.send(response);
     } catch (error) {
         res.status(500).json({ error: 'API Error' });
     }
@@ -31,208 +28,81 @@ app.use('/feeds/api', async (req, res) => {
 
 async function handleGDataRequest(req) {
     const { path, method, query, body } = req;
-    
-    // Эмуляция главной страницы канала
+
+    // Эндпоинты GData
+    if (path.includes('/videos')) {
+        return getVideos(query);
+    }
+    if (path.includes('/users')) {
+        return getUserProfile(query);
+    }
     if (path.includes('/channels')) {
         return getChannelData(query);
     }
-
-    // Обработка лайков/дизлайков
-    if (path.includes('/videos/rate')) {
-        return rateVideo(body);
-    }
-
-    // Получение рекомендаций
     if (path.includes('/activities')) {
-        return getRecommendations(query);
+        return getActivities(query);
     }
-
-    // Обработка поиска с фильтрами
-    if (path.includes('/videos')) {
-        return handleSearchRequest(query);
-    }
-
-    // Подпика на канал
-    if (path.includes('/subscriptions')) {
-        return subscribeToChannel(body);
-    }
-
-    // Обработка категорий
-    if (path.includes('/categories')) {
-        return getCategoryVideos(query);
-    }
-
-    // Получение плейлистов
     if (path.includes('/playlists')) {
         return getPlaylists(query);
     }
-
-    // Получение субтитров
-    if (path.includes('/captions')) {
-        return getCaptions(query);
-    }
-
-    // Получение комментариев
     if (path.includes('/comments')) {
         return getComments(query);
-    }
-
-    // Лайк/дизлайк комментария
-    if (path.includes('/comments/rate')) {
-        return rateComment(body);
     }
 
     // Дефолтная обработка
     return forwardToYoutubeAPI(path, method, query);
 }
 
+// Получение видео
+async function getVideos(params) {
+    const response = await axios.get('https://www.googleapis.com/youtube/v3/videos', {
+        params: {
+            part: 'snippet,statistics',
+            id: params.id,
+            key: API_KEY
+        }
+    });
+
+    return transformToAtom(response.data.items, 'video');
+}
+
+// Получение профиля пользователя
+async function getUserProfile(params) {
+    const response = await axios.get('https://www.googleapis.com/youtube/v3/channels', {
+        params: {
+            part: 'snippet,statistics',
+            forUsername: params.username,
+            key: API_KEY
+        }
+    });
+
+    return transformToAtom(response.data.items, 'user');
+}
+
 // Получение данных канала
 async function getChannelData(params) {
-    const [channelResponse, videosResponse] = await Promise.all([
-        axios.get('https://www.googleapis.com/youtube/v3/channels', {
-            params: {
-                part: 'snippet,statistics',
-                id: params.id,
-                key: API_KEY
-            }
-        }),
-        axios.get('https://www.googleapis.com/youtube/v3/search', {
-            params: {
-                part: 'snippet',
-                channelId: params.id,
-                maxResults: 20,
-                order: 'date',
-                key: API_KEY
-            }
-        })
-    ]);
-
-    const channelInfo = channelResponse.data.items[0];
-    return {
-        entry: {
-            id: channelInfo.id,
-            title: channelInfo.snippet.title,
-            description: channelInfo.snippet.description,
-            avatar: channelInfo.snippet.thumbnails.default.url,
-            subscriberCount: channelInfo.statistics.subscriberCount,
-            viewCount: channelInfo.statistics.viewCount,
-            videos: videosResponse.data.items.map(video => ({
-                id: video.id.videoId,
-                title: video.snippet.title,
-                published: video.snippet.publishedAt,
-                thumbnail: video.snippet.thumbnails.default.url,
-                viewCount: video.statistics?.viewCount || 0
-            }))
+    const response = await axios.get('https://www.googleapis.com/youtube/v3/channels', {
+        params: {
+            part: 'snippet,statistics',
+            id: params.id,
+            key: API_KEY
         }
-    };
+    });
+
+    return transformToAtom(response.data.items, 'channel');
 }
 
-// Обработка рейтингов
-async function rateVideo(data) {
-    const [youtubeResponse, dislikeResponse] = await Promise.all([
-        axios.post(`https://www.googleapis.com/youtube/v3/videos/rate?id=${data.videoId}&rating=${data.rating}&key=${API_KEY}`),
-        dislikeService.post('/votes', {
-            videoId: data.videoId,
-            rating: data.rating
-        })
-    ]);
-
-    return {
-        status: 'success',
-        likes: youtubeResponse.data.likeCount,
-        dislikes: dislikeResponse.data.dislikes
-    };
-}
-
-// Получение рекомендаций
-async function getRecommendations(params) {
+// Получение активности
+async function getActivities(params) {
     const response = await axios.get('https://www.googleapis.com/youtube/v3/activities', {
         params: {
             part: 'snippet,contentDetails',
-            home: true,
-            maxResults: params['max-results'] || 10,
+            channelId: params.channelId,
             key: API_KEY
         }
     });
 
-    return {
-        feed: {
-            entry: response.data.items.map(item => ({
-                id: item.contentDetails.upload.videoId,
-                title: item.snippet.title,
-                thumbnail: item.snippet.thumbnails.default.url,
-                viewCount: item.statistics?.viewCount || 0
-            }))
-        }
-    };
-}
-
-// Обработка поиска с фильтрами
-async function handleSearchRequest(params) {
-    const v3Params = convertGDataToV3(params);
-    
-    const response = await axios.get('https://www.googleapis.com/youtube/v3/search', {
-        params: {
-            part: 'snippet',
-            type: 'video',
-            key: API_KEY,
-            ...v3Params
-        }
-    });
-
-    return transformSearchResults(response.data);
-}
-
-// Подписка на канал
-async function subscribeToChannel(data) {
-    const response = await axios.post('https://www.googleapis.com/youtube/v3/subscriptions', {
-        snippet: {
-            resourceId: {
-                channelId: data.channelId
-            }
-        }
-    }, {
-        params: {
-            part: 'snippet',
-            key: API_KEY
-        },
-        headers: {
-            Authorization: `Bearer ${oauth2Client.credentials.access_token}`
-        }
-    });
-
-    return {
-        status: 'success',
-        subscriptionId: response.data.id
-    };
-}
-
-// Обработка категорий
-async function getCategoryVideos(params) {
-    const categoryMapping = {
-        'movies': 'фильмы',
-        'music': 'музыка',
-        'gaming': 'игры',
-        'news': 'новости',
-        'sports': 'спорт'
-    };
-
-    const categoryQuery = categoryMapping[params.category] || '';
-    const v3Params = convertGDataToV3({
-        ...params,
-        q: categoryQuery
-    });
-
-    const response = await axios.get('https://www.googleapis.com/youtube/v3/search', {
-        params: {
-            part: 'snippet',
-            type: 'video',
-            key: API_KEY,
-            ...v3Params
-        }
-    });
-
-    return transformSearchResults(response.data);
+    return transformToAtom(response.data.items, 'activity');
 }
 
 // Получение плейлистов
@@ -241,42 +111,11 @@ async function getPlaylists(params) {
         params: {
             part: 'snippet',
             channelId: params.channelId,
-            maxResults: params['max-results'] || 10,
             key: API_KEY
         }
     });
 
-    return {
-        feed: {
-            entry: response.data.items.map(playlist => ({
-                id: playlist.id,
-                title: playlist.snippet.title,
-                description: playlist.snippet.description,
-                thumbnail: playlist.snippet.thumbnails.default.url
-            }))
-        }
-    };
-}
-
-// Получение субтитров
-async function getCaptions(params) {
-    const response = await axios.get('https://www.googleapis.com/youtube/v3/captions', {
-        params: {
-            part: 'snippet',
-            videoId: params.videoId,
-            key: API_KEY
-        }
-    });
-
-    return {
-        feed: {
-            entry: response.data.items.map(caption => ({
-                id: caption.id,
-                language: caption.snippet.language,
-                name: caption.snippet.name
-            }))
-        }
-    };
+    return transformToAtom(response.data.items, 'playlist');
 }
 
 // Получение комментариев
@@ -285,37 +124,11 @@ async function getComments(params) {
         params: {
             part: 'snippet',
             videoId: params.videoId,
-            maxResults: params['max-results'] || 20,
             key: API_KEY
         }
     });
 
-    return {
-        feed: {
-            entry: response.data.items.map(comment => ({
-                id: comment.id,
-                author: comment.snippet.topLevelComment.snippet.authorDisplayName,
-                text: comment.snippet.topLevelComment.snippet.textDisplay,
-                likes: comment.snippet.topLevelComment.snippet.likeCount,
-                publishedAt: comment.snippet.topLevelComment.snippet.publishedAt
-            }))
-        }
-    };
-}
-
-// Лайк/дизлайк комментария
-async function rateComment(data) {
-    const response = await axios.post(`https://www.googleapis.com/youtube/v3/comments/rate?id=${data.commentId}&rating=${data.rating}&key=${API_KEY}`, {}, {
-        headers: {
-            Authorization: `Bearer ${oauth2Client.credentials.access_token}`
-        }
-    });
-
-    return {
-        status: 'success',
-        commentId: data.commentId,
-        rating: data.rating
-    };
+    return transformToAtom(response.data.items, 'comment');
 }
 
 // Дефолтная обработка запросов
@@ -329,37 +142,38 @@ async function forwardToYoutubeAPI(path, method, query) {
         }
     });
 
-    return response.data;
+    return transformToAtom(response.data.items, 'default');
 }
 
-// Преобразование результатов поиска
-function transformSearchResults(data) {
-    return {
-        feed: {
-            xmlns: 'http://www.w3.org/2005/Atom',
-            'openSearch:totalResults': data.pageInfo.totalResults,
-            'openSearch:startIndex': data.pageInfo.resultsPerPage,
-            entry: data.items.map(item => ({
-                id: item.id.videoId,
-                title: item.snippet.title,
-                published: item.snippet.publishedAt,
-                media: {
-                    group: {
-                        thumbnail: item.snippet.thumbnails.default.url,
-                        description: item.snippet.description
-                    }
-                },
-                viewCount: item.statistics?.viewCount || 0
-            }))
+// Преобразование в формат Atom/XML
+function transformToAtom(items, type) {
+    const feed = xmlbuilder.create('feed', { encoding: 'UTF-8' })
+        .att('xmlns', 'http://www.w3.org/2005/Atom')
+        .att('xmlns:media', 'http://search.yahoo.com/mrss/')
+        .att('xmlns:yt', 'http://gdata.youtube.com/schemas/2007');
+
+    items.forEach(item => {
+        const entry = feed.ele('entry');
+        entry.ele('id', {}, item.id);
+        entry.ele('title', {}, item.snippet.title);
+        entry.ele('published', {}, item.snippet.publishedAt);
+
+        if (type === 'video') {
+            entry.ele('media:group', {}, {
+                'media:thumbnail': { url: item.snippet.thumbnails.default.url },
+                'media:description': item.snippet.description
+            });
         }
-    };
-}
 
-// Вспомогательная функция для работы с датами
-function getDate(daysAgo) {
-    const date = new Date();
-    date.setDate(date.getDate() + daysAgo);
-    return date.toISOString();
+        if (type === 'user' || type === 'channel') {
+            entry.ele('yt:statistics', {}, {
+                viewCount: item.statistics.viewCount,
+                subscriberCount: item.statistics.subscriberCount
+            });
+        }
+    });
+
+    return feed.end({ pretty: true });
 }
 
 // Запуск сервера
