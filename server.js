@@ -52,6 +52,11 @@ async function handleGDataRequest(req) {
         return handleSearchRequest(query);
     }
 
+    // Подписка на канал
+    if (path.includes('/subscriptions')) {
+        return subscribeToChannel(body);
+    }
+
     // Дефолтная обработка
     return forwardToYoutubeAPI(path, method, query);
 }
@@ -61,7 +66,7 @@ async function getChannelData(params) {
     const [channelResponse, videosResponse] = await Promise.all([
         axios.get('https://www.googleapis.com/youtube/v3/channels', {
             params: {
-                part: 'snippet,contentDetails,statistics',
+                part: 'snippet,statistics',
                 id: params.id,
                 key: API_KEY
             }
@@ -77,14 +82,21 @@ async function getChannelData(params) {
         })
     ]);
 
+    const channelInfo = channelResponse.data.items[0];
     return {
         entry: {
-            id: channelResponse.data.items[0].id,
-            title: channelResponse.data.items[0].snippet.title,
+            id: channelInfo.id,
+            title: channelInfo.snippet.title,
+            description: channelInfo.snippet.description,
+            avatar: channelInfo.snippet.thumbnails.default.url,
+            subscriberCount: channelInfo.statistics.subscriberCount,
+            viewCount: channelInfo.statistics.viewCount,
             videos: videosResponse.data.items.map(video => ({
                 id: video.id.videoId,
                 title: video.snippet.title,
-                published: video.snippet.publishedAt
+                published: video.snippet.publishedAt,
+                thumbnail: video.snippet.thumbnails.default.url,
+                viewCount: video.statistics?.viewCount || 0
             }))
         }
     };
@@ -123,7 +135,8 @@ async function getRecommendations(params) {
             entry: response.data.items.map(item => ({
                 id: item.contentDetails.upload.videoId,
                 title: item.snippet.title,
-                thumbnail: item.snippet.thumbnails.default.url
+                thumbnail: item.snippet.thumbnails.default.url,
+                viewCount: item.statistics?.viewCount || 0
             }))
         }
     };
@@ -143,6 +156,30 @@ async function handleSearchRequest(params) {
     });
 
     return transformSearchResults(response.data);
+}
+
+// Подписка на канал
+async function subscribeToChannel(data) {
+    const response = await axios.post('https://www.googleapis.com/youtube/v3/subscriptions', {
+        snippet: {
+            resourceId: {
+                channelId: data.channelId
+            }
+        }
+    }, {
+        params: {
+            part: 'snippet',
+            key: API_KEY
+        },
+        headers: {
+            Authorization: `Bearer ${oauth2Client.credentials.access_token}`
+        }
+    });
+
+    return {
+        status: 'success',
+        subscriptionId: response.data.id
+    };
 }
 
 // Конвертация параметров gdata 2.1 → v3
@@ -216,7 +253,8 @@ function transformSearchResults(data) {
                         thumbnail: item.snippet.thumbnails.default.url,
                         description: item.snippet.description
                     }
-                }
+                },
+                viewCount: item.statistics?.viewCount || 0
             }))
         }
     };
