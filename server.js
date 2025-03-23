@@ -4,7 +4,7 @@ const { google } = require('googleapis');
 const OAuth2 = google.auth.OAuth2;
 const xmlbuilder = require('xmlbuilder');
 const app = express();
-const port = 3000;
+const port = 80;
 
 // Конфигурация OAuth 2.0
 const CLIENT_ID = 'YOUR_CLIENT_ID';
